@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "fastai_course"
+  site-url: "https://hitkumar.github.io/fastai_course"
+  description: "Repo for fastai course"
+  repo-branch: main
+  repo-url: "https://github.com/hitkumar/fastai_course"
