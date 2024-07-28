@@ -12,7 +12,7 @@ from torch.utils.data import default_collate
 from .training import *
 
 # %% auto 0
-__all__ = ['inplace', 'collate_dict', 'show_image', 'subplots', 'get_grid', 'show_images']
+__all__ = ['inplace', 'collate_dict', 'show_image', 'subplots', 'get_grid', 'show_images', 'DataLoaders']
 
 # %% ../nbs/05_datasets.ipynb 39
 def inplace(f):
@@ -97,3 +97,13 @@ def show_images(ims:list, nrows:int|None=None, ncols:int|None=None, titles:list|
     axs = get_grid(len(ims), nrows, ncols, **kwargs)[1].flat
     for ax, t, img in zip_longest(axs, titles or [], ims):
         show_image(img, ax=ax, title=t)
+
+# %% ../nbs/05_datasets.ipynb 108
+class DataLoaders:
+    def __init__(self, *dls):
+        self.train, self.valid = dls[:2]
+    
+    @classmethod
+    def from_dd(cls, dd, batch_size, **kwargs):
+        f = collate_dict(dd['train'])
+        return cls(*get_dls(*dd.values(), bs=batch_size, collate_fn=f, **kwargs))
