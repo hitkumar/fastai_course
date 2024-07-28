@@ -2,7 +2,8 @@
 
 # %% auto 0
 __all__ = ['CancelFitException', 'CancelBatchException', 'CancelEpochException', 'Callback', 'run_cbs', 'SingleBatchCB', 'to_cpu',
-           'MetricsCB', 'DeviceCB', 'TrainerCB', 'ProgressCB', 'with_cbs', 'Learner']
+           'MetricsCB', 'DeviceCB', 'TrainerCB', 'ProgressCB', 'with_cbs', 'Learner', 'TrainLearner', 'MomentumLearner',
+           'LRFinderCB', 'lr_find', 'lr_find_test']
 
 # %% ../nbs/09_learners.ipynb 1
 import math, torch, matplotlib.pyplot as plt
@@ -132,6 +133,8 @@ class ProgressCB(Callback):
     def after_epoch(self, learn):
         if not learn.training and self.plot and hasattr(learn, 'metrics'):
             self.val_losses.append(learn.metrics.all_metrics['loss'].compute())
+            # print(f"len val_losses = {len(self.val_losses)}, epoch={learn.epoch}")
+            # learn.epoch has fisished, so learn.epoch + 1 = len(self.vasl_losses) here.
             self.mbar.update_graph([
                     [fc.L.range(self.train_losses), self.train_losses],
                     [fc.L.range(learn.epoch+1).map(lambda x: (x+1) * len(learn.dls.train)), self.val_losses]
@@ -158,7 +161,7 @@ class Learner:
         self.model = model
         self.dls = dls
         self.loss_func = loss_func
-        self.cbs = cbs
+        self.cbs = fc.L(cbs)
         self.lr = lr
         self.opt_func = opt_func
         # fc.store_attr()
@@ -192,12 +195,17 @@ class Learner:
             if valid:
                 with torch.no_grad(): self.one_epoch(False)
     
-    def fit(self, n_epochs=1, train=True, valid=True):
-        self.epochs = range(n_epochs)
-        self.opt = self.opt_func(self.model.parameters(), self.lr)
-        self._fit(train, valid)
-        # finally:
-        #     for cb in cbs: self.cbs.remove(cb)
+    def fit(self, n_epochs=1, train=True, valid=True, cbs=None, lr=None):
+        cbs = fc.L(cbs)
+        try:
+            for cb in cbs:
+                self.cbs.append(cb)
+            self.epochs = range(n_epochs)
+            if lr is None: lr = self.lr
+            self.opt = self.opt_func(self.model.parameters(), lr=lr)
+            self._fit(train, valid)
+        finally:
+            for cb in cbs: self.cbs.remove(cb)
     
     def callback(self, method_name):
         run_cbs(self.cbs, method_name, self)
@@ -209,3 +217,73 @@ class Learner:
     
     @property
     def training(self): return self.model.training
+
+# %% ../nbs/09_learners.ipynb 55
+class TrainLearner(Learner):
+    def predict(self): self.preds = self.model(self.batch[0])
+    def get_loss(self): self.loss = self.loss_func(self.preds, self.batch[1])
+    def backward(self): self.loss.backward()
+    def step(self): self.opt.step()
+    def zero_grad(self): self.opt.zero_grad()
+
+# %% ../nbs/09_learners.ipynb 57
+class MomentumLearner(TrainLearner):
+    def __init__(self, model, dls=(0,), loss_func=F.cross_entropy, cbs=[], lr=0.1, opt_func=optim.SGD, mom=0.8):
+        self.mom = mom
+        super().__init__(model, dls, loss_func, cbs, lr, opt_func)
+    
+    def zero_grad(self):
+        with torch.no_grad():
+            for p in self.model.parameters():
+                # print(p.grad)
+                # if p.requires_grad:
+                p.grad *= self.mom
+
+# %% ../nbs/09_learners.ipynb 59
+from torch.optim.lr_scheduler import ExponentialLR
+import pandas as pd
+
+# %% ../nbs/09_learners.ipynb 60
+class LRFinderCB(Callback):
+    def __init__(self, gamma=1.3, max_mult=3):
+        fc.store_attr()
+    
+    def before_fit(self, learn):
+        self.sched = ExponentialLR(learn.opt, self.gamma)
+        self.lrs,self.losses = [],[]
+        self.min = math.inf
+    
+    def after_batch(self, learn):
+        if not learn.training:
+            raise CancelEpochException()
+        # last_lr = learn.opt.param_groups[0]['lr']
+        last_lr = self.sched.get_last_lr()[0]
+        self.lrs.append(last_lr)
+        loss = learn.loss.item()
+        self.losses.append(loss)
+        if loss < self.min: self.min = loss
+        if math.isnan(loss) or (loss > self.min * self.max_mult):
+            raise CancelFitException()
+        # increase the learning rate by multiplying by gamma
+        self.sched.step()
+    
+    def cleanup_fit(self, learn):
+        # print(f"learning rates are {self.lrs}, losses are {self.losses}")
+
+        # lr_losses_pd = pd.DataFrame(
+        #     {'lrs': self.lrs,
+        #      'losses': self.losses
+        #     })
+        # print(lr_losses_pd)
+        plt.plot(self.lrs, self.losses)
+        plt.xscale('log')
+
+# %% ../nbs/09_learners.ipynb 63
+@fc.patch
+def lr_find(self: Learner, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
+        self.fit(max_epochs, train=True, valid=False, lr=start_lr, cbs=LRFinderCB(max_mult=max_mult, gamma=gamma))
+
+# %% ../nbs/09_learners.ipynb 65
+@fc.patch
+def lr_find_test(self: Learner, gamma=1.3):
+    print(f'gamma is {gamma}')
